@@ -1,110 +1,93 @@
-import os
-import sqlite3
-from flask import Flask, request, render_template_string, redirect, url_for, send_from_directory, jsonify
-from werkzeug.utils import secure_filename
-from datetime import datetime
-from dotenv import load_dotenv
+import tkinter as tk
+from tkinter import scrolledtext, ttk
+import transformers
+import requests
+from bs4 import BeautifulSoup
+import traceback
+import difflib
 
-load_dotenv()
+# Branding
+BRANDING = """
+  _____   _____  _____   _   _
+ |  ___| |  _  ||  _  | | | | |
+ | |__   | | | || | | | | | | |
+ |  __|  | | | || | | | | | | |
+ | |___  |  _  ||  _  | | |_| |
+ |_____| |_| |_||_| |_| |_____|
+          By Shourya
+"""
 
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
-ALLOWED_EXT = os.getenv("ALLOWED_EXT", "png,jpg,jpeg,gif,txt,pdf,docx,zip,mp4,mp3").split(",")
-MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", 16 * 1024 * 1024))  # default 16 MB
+# LLM Models
+MODEL_NAMES = {
+    "GPT-2": "gpt2",
+    "GPT-Neo": "EleutherAI/gpt-neo-1.3B",
+}
 
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Known words list for autocorrect
+known_words = [
+    "python", "function", "variable", "loop", "class", "import",
+    "tkinter", "code", "generate", "search", "tool"
+]
 
-app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-app.secret_key = os.getenv("FLASK_SECRET", "dev_secret_change_me")
-DB_PATH = os.getenv("DB_PATH", "chat.db")
+# Function to generate code using LLM
+def generate_code(prompt, model_name="gpt2", max_length=150):
+    try:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_name)
+        input_ids = tokenizer.encode(prompt, return_tensors="pt")
+        output = model.generate(input_ids, max_length=max_length, num_return_sequences=1, no_repeat_ngram_size=2)
+        generated_code = tokenizer.decode(output[0], skip_special_tokens=True)
+        return generated_code
+    except Exception as e:
+        print(f"Error generating code: {e}")
+        traceback.print_exc()
+        return None
 
-# --- DB helpers ---
-def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Function to search the web for code snippets
+def search_web(query):
+    try:
+        search_url = f"https://www.google.com/search?q={query}"
+        response = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        code_snippets = [code_tag.text for code_tag in soup.find_all("code")]
+        return code_snippets
+    except requests.exceptions.RequestException as e:
+        print(f"Error during web search: {e}")
+        return []
+    except Exception as e:
+        print(f"Error parsing web results: {e}")
+        traceback.print_exc()
+        return []
 
-db = get_db()
-def init_db():
-    cur = db.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT,
-        text TEXT,
-        file_name TEXT,
-        file_path TEXT,
-        created_at TEXT
-    )
-    """)
-    db.commit()
+# Function to create a new tool (Python file)
+def create_tool(tool_name, code):
+    try:
+        file_name = f"{tool_name}.py"
+        with open(file_name, "w", encoding="utf-8") as f:
+            f.write(code)
+        print(f"Tool '{tool_name}' created as '{file_name}'")
+    except Exception as e:
+        print(f"Error creating tool: {e}")
+        traceback.print_exc()
 
-init_db()
+# Autocorrection function
+def autocorrect(text):
+    words = text.split()
+    corrected_words = []
+    for word in words:
+        if word in known_words:
+            corrected_words.append(word)
+        else:
+            closest_match = difflib.get_close_matches(word, known_words, n=1, cutoff=0.6)
+            corrected_words.append(closest_match[0] if closest_match else word)
+    return " ".join(corrected_words)
 
-# --- Helpers ---
-def allowed_file(filename):
-    if "." not in filename:
-        return False
-    ext = filename.rsplit(".", 1)[1].lower()
-    return ext in ALLOWED_EXT
-
-# --- Routes ---
-INDEX_HTML = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Chat & File Share — Made by Shourya</title>
-  <style>
-    :root{
-      --bg:#0f1724;
-      --card:#0b1220;
-      --muted:#9aa4b2;
-      --accent:#7c5cff;
-      --me:#1f2937;
-      --you:#0b1220;
-      --bubble-me:#7c5cff;
-      --bubble-you:#111827;
-      --text-light:#e6eef8;
-      --maxw:900px;
-    }
-    html,body{height:100%; margin:0; font-family:Inter, Roboto, Arial, sans-serif; background:linear-gradient(180deg,#071126 0%, #0b1320 100%); color:var(--text-light);}
-    .wrap{max-width:var(--maxw); margin:0 auto; height:100vh; display:flex; flex-direction:column; padding:12px;}
-    header{display:flex; align-items:center; gap:12px; padding:10px 8px; border-radius:12px; background:rgba(255,255,255,0.02); box-shadow:0 6px 18px rgba(2,6,23,0.6); }
-    .logo{width:44px; height:44px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#5eead4); display:flex; align-items:center; justify-content:center; font-weight:700; color:#081023;}
-    header h1{font-size:16px; margin:0;}
-    header p{margin:0; font-size:12px; color:var(--muted);}
-    main{flex:1; margin-top:12px; display:flex; flex-direction:column; gap:10px;}
-    #chat{flex:1; overflow:auto; padding:16px; border-radius:12px; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);}
-    .msg-row{display:flex; gap:8px; margin-bottom:10px; align-items:flex-end;}
-    .msg-row.me{justify-content:flex-end;}
-    .bubble{max-width:78%; padding:10px 12px; border-radius:12px; box-shadow:0 4px 14px rgba(2,6,23,0.6); color:var(--text-light); font-size:14px; line-height:1.3;}
-    .bubble .meta{display:block; font-size:11px; color:var(--muted); margin-bottom:6px;}
-    .bubble.you{background:var(--bubble-you);}
-    .bubble.me{background:linear-gradient(90deg, #6f56ff, #7c5cff); text-align:right;}
-    .file-link{display:inline-block; margin-top:6px; padding:6px 8px; background:rgba(255,255,255,0.03); border-radius:8px; font-size:13px; color:var(--text-light); text-decoration:none;}
-    .footer{display:flex; gap:8px; align-items:center; padding:10px; background:transparent; position:sticky; bottom:0; margin-top:8px;}
-    input[type="text"], textarea{background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03); color:var(--text-light); padding:10px; border-radius:8px; outline:none; width:100%;}
-    #controls{display:flex; gap:8px; align-items:center; width:100%;}
-    #fileInput{display:none;}
-    .btn{padding:10px 12px; border-radius:10px; background:var(--accent); color:#021024; border:none; cursor:pointer; font-weight:600;}
-    .small-btn{padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.03); color:var(--text-light); border:1px solid rgba(255,255,255,0.03); cursor:pointer;}
-    .brand{font-size:11px; color:var(--muted); text-align:center; margin-top:8px;}
-    .top-row{display:flex; gap:8px; align-items:center; justify-content:space-between;}
-    @media (max-width:520px){
-      .bubble{max-width:92%;}
-      header h1{font-size:14px;}
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <header>
-      <div class="logo">SA</div>
-      <div style="flex:1">
+# Example usage
+if __name__ == "__main__":
+    sample_text = "pythn functon varable"
+    print("Original:", sample_text)
+    print("Autocorrected:", autocorrect(sample_text))      <div style="flex:1">
         <h1>Local Chat & File Share</h1>
         <p>Share messages & files on the same Wi-Fi — Made by Shourya</p>
       </div>
