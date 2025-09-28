@@ -1,110 +1,122 @@
-import tkinter as tk
-from tkinter import scrolledtext, ttk
-import transformers
-import requests
-from bs4 import BeautifulSoup
-import traceback
-import difflib
-
-# Branding
-BRANDING = """
-  _____   _____  _____   _   _
- |  ___| |  _  ||  _  | | | | |
- | |__   | | | || | | | | | | |
- |  __|  | | | || | | | | | | |
- | |___  |  _  ||  _  | | |_| |
- |_____| |_| |_||_| |_| |_____|
-          By Shourya
+#!/usr/bin/env python3
+"""
+TempMail + SendMail Tool
+Cool UI • Made by Shourya
 """
 
-# LLM Models
-MODEL_NAMES = {
-    "GPT-2": "gpt2",
-    "GPT-Neo": "EleutherAI/gpt-neo-1.3B",
-}
+import os
+import sys
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Prompt
 
-# Known words list for autocorrect
-known_words = [
-    "python", "function", "variable", "loop", "class", "import",
-    "tkinter", "code", "generate", "search", "tool"
-]
+console = Console()
+API_BASE = "https://www.1secmail.com/api/v1/"
 
-# Function to generate code using LLM
-def generate_code(prompt, model_name="gpt2", max_length=150):
-    try:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
-        model = transformers.AutoModelForCausalLM.from_pretrained(model_name)
-        input_ids = tokenizer.encode(prompt, return_tensors="pt")
-        output = model.generate(input_ids, max_length=max_length, num_return_sequences=1, no_repeat_ngram_size=2)
-        generated_code = tokenizer.decode(output[0], skip_special_tokens=True)
-        return generated_code
-    except Exception as e:
-        print(f"Error generating code: {e}")
-        traceback.print_exc()
-        return None
+# ========== TEMP MAIL FUNCTIONS ==========
+def gen_mailbox():
+    r = requests.get(API_BASE, params={"action": "genRandomMailbox", "count": 1})
+    return r.json()[0]
 
-# Function to search the web for code snippets
-def search_web(query):
-    try:
-        search_url = f"https://www.google.com/search?q={query}"
-        response = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        code_snippets = [code_tag.text for code_tag in soup.find_all("code")]
-        return code_snippets
-    except requests.exceptions.RequestException as e:
-        print(f"Error during web search: {e}")
-        return []
-    except Exception as e:
-        print(f"Error parsing web results: {e}")
-        traceback.print_exc()
-        return []
+def check_inbox(email):
+    login, domain = email.split("@")
+    r = requests.get(API_BASE, params={"action": "getMessages", "login": login, "domain": domain})
+    return r.json()
 
-# Function to create a new tool (Python file)
-def create_tool(tool_name, code):
-    try:
-        file_name = f"{tool_name}.py"
-        with open(file_name, "w", encoding="utf-8") as f:
-            f.write(code)
-        print(f"Tool '{tool_name}' created as '{file_name}'")
-    except Exception as e:
-        print(f"Error creating tool: {e}")
-        traceback.print_exc()
+def read_message(email, msg_id):
+    login, domain = email.split("@")
+    r = requests.get(API_BASE, params={
+        "action": "readMessage", "login": login, "domain": domain, "id": msg_id
+    })
+    return r.json()
 
-# Autocorrection function
-def autocorrect(text):
-    words = text.split()
-    corrected_words = []
-    for word in words:
-        if word in known_words:
-            corrected_words.append(word)
-        else:
-            closest_match = difflib.get_close_matches(word, known_words, n=1, cutoff=0.6)
-            corrected_words.append(closest_match[0] if closest_match else word)
-    return " ".join(corrected_words)
+# ========== SEND EMAIL FUNCTION ==========
+def send_email(sender, password, recipient, subject, body, smtp_server="smtp.gmail.com", smtp_port=587):
+    msg = MIMEText(body, "plain")
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Subject"] = subject
 
-# Example usage
+    server = smtplib.SMTP(smtp_server, smtp_port)
+    server.starttls()
+    server.login(sender, password)
+    server.sendmail(sender, [recipient], msg.as_string())
+    server.quit()
+
+# ========== UI ==========
+def banner():
+    console.print(Panel.fit(
+        "[bold cyan]📧 TempMail + Mailer[/bold cyan]\n[green]Cool UI - Made by Shourya[/green]",
+        border_style="bright_magenta"
+    ))
+
+def main():
+    banner()
+    while True:
+        console.print("\n[bold yellow]Options:[/bold yellow]")
+        console.print("1. Generate Temp Mailbox")
+        console.print("2. Check Inbox")
+        console.print("3. Read Message")
+        console.print("4. Send Email (SMTP)")
+        console.print("5. Exit\n")
+
+        choice = Prompt.ask("[bold cyan]Enter choice[/bold cyan]", choices=["1","2","3","4","5"])
+
+        if choice == "1":
+            email = gen_mailbox()
+            console.print(Panel(f"[bold green]Your Temp Mailbox:[/bold green] {email}", border_style="green"))
+
+        elif choice == "2":
+            email = Prompt.ask("Enter your temp email")
+            msgs = check_inbox(email)
+            if not msgs:
+                console.print("[red]Inbox empty[/red]")
+            else:
+                table = Table(title=f"Inbox for {email}")
+                table.add_column("ID", style="cyan")
+                table.add_column("From", style="yellow")
+                table.add_column("Subject", style="green")
+                table.add_column("Date", style="magenta")
+                for m in msgs:
+                    table.add_row(str(m["id"]), m["from"], m["subject"], m["date"])
+                console.print(table)
+
+        elif choice == "3":
+            email = Prompt.ask("Enter your temp email")
+            msg_id = Prompt.ask("Enter message ID")
+            msg = read_message(email, msg_id)
+            console.print(Panel(f"""
+[bold cyan]From:[/bold cyan] {msg.get('from')}
+[bold cyan]Subject:[/bold cyan] {msg.get('subject')}
+[bold cyan]Date:[/bold cyan] {msg.get('date')}
+
+[bold green]Body:[/bold green]
+{msg.get('textBody') or "(No text body)"}
+            """, border_style="cyan"))
+
+        elif choice == "4":
+            sender = Prompt.ask("Enter your sender email")
+            password = Prompt.ask("Enter your email password (App Password for Gmail)", password=True)
+            recipient = Prompt.ask("Enter recipient email")
+            subject = Prompt.ask("Enter subject")
+            body = Prompt.ask("Enter message body")
+
+            try:
+                send_email(sender, password, recipient, subject, body)
+                console.print("[bold green]Email sent successfully![/bold green]")
+            except Exception as e:
+                console.print(f"[red]Failed to send: {e}[/red]")
+
+        elif choice == "5":
+            console.print("[bold magenta]Bye! Made by Shourya ❤[/bold magenta]")
+            sys.exit()
+
 if __name__ == "__main__":
-    sample_text = "pythn functon varable"
-    print("Original:", sample_text)
-    print("Autocorrected:", autocorrect(sample_text))      <div style="flex:1">
-        <h1>Local Chat & File Share</h1>
-        <p>Share messages & files on the same Wi-Fi — Made by Shourya</p>
-      </div>
-      <div style="text-align:right">
-        <div style="font-size:12px; color:var(--muted)">Status</div>
-        <div id="status" style="font-weight:700; color:#7ee7b8; font-size:12px">Online</div>
-      </div>
-    </header>
-
-    <main>
-      <div class="top-row">
-        <div style="display:flex; gap:8px; align-items:center;">
-          <input id="username" type="text" placeholder="Your name (save automatically)" style="width:220px;" />
-          <button id="saveName" class="small-btn">Save</button>
-        </div>
-        <div style="font-size:12px; color:var(--muted)">Open in Chrome: <strong id="open-url">127.0.0.1:5000</strong></div>
-      </div>
+    main()      </div>
 
       <div id="chat" aria-live="polite"></div>
 
